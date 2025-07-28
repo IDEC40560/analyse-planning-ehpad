@@ -1,24 +1,7 @@
-# App web
 streamlit
-
-# Manipulation de données
 pandas
-numpy
-
-# Lecture / écriture Excel
-openpyxl
-xlsxwriter
-
-# Jours fériés
-holidays
-
-# Visualisation (au cas où tu ajoutes des graphiques)
 matplotlib
-seaborn
-plotly
-
-# Export PDF
 fpdf2
-
-# Pour améliorer l'affichage des tableaux
-tabulate
+xlsxwriter
+holidays
+openpyxl
