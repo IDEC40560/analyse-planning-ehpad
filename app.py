@@ -62,13 +62,26 @@ if uploaded_file:
             except:
                 continue
 
-        # Tableau résultats dimanches et fériés
+        # Tableau résultats dimanches et fériés (détail)
         if resultats:
             df_result = pd.DataFrame(resultats, columns=["Nom", "Date", "Jour", "Code horaire", "Durée (heures)"])
             st.success("✅ Analyse des dimanches et jours fériés terminée")
+            st.subheader("Détail par jour")
             st.dataframe(df_result)
+
+            # Tableau synthétique par agent
+            df_summary = df_result.groupby("Nom").agg({
+                "Date": lambda x: ", ".join(x),
+                "Durée (heures)": "sum",
+                "Jour": "count"
+            }).reset_index()
+            df_summary.rename(columns={"Jour": "Nombre de jours"}, inplace=True)
+
+            st.subheader("Synthèse par agent")
+            st.dataframe(df_summary)
         else:
             df_result = pd.DataFrame()
+            df_summary = pd.DataFrame()
             st.warning("⚠️ Aucun travail trouvé les dimanches ou jours fériés.")
 
         # Tableau résultats nuits
@@ -82,9 +95,11 @@ if uploaded_file:
 
         # Export Excel
         output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
             if not df_result.empty:
-                df_result.to_excel(writer, index=False, sheet_name="Dimanches_JF")
+                df_result.to_excel(writer, index=False, sheet_name="Dimanches_JF_Detail")
+            if not df_summary.empty:
+                df_summary.to_excel(writer, index=False, sheet_name="Dimanches_JF_Synthese")
             if not df_nuits.empty:
                 df_nuits.to_excel(writer, index=False, sheet_name="Nuits")
         st.download_button("📥 Télécharger les résultats Excel", data=output.getvalue(), file_name="resultats_planning.xlsx")
