@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import calendar
 import matplotlib.pyplot as plt
 from datetime import datetime
 from io import BytesIO
@@ -8,7 +7,6 @@ from fpdf import FPDF
 import holidays
 
 st.set_page_config(page_title="Analyse Planning EHPAD", layout="wide")
-
 st.title("📅 Analyse des plannings EHPAD")
 
 # Durées des codes horaires
@@ -21,12 +19,11 @@ horaire_durations = {
     "815": 10
 }
 
-uploaded_file = st.file_uploader("Téléversez le fichier Excel du planning :", type="xlsx")
+uploaded_file = st.file_uploader("📂 Téléversez le fichier Excel du planning :", type="xlsx")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    # Détection mois et année
     try:
         mois_detecte = int(st.text_input("Mois (1-12) :", datetime.now().month))
         annee_detectee = int(st.text_input("Année (YYYY) :", datetime.now().year))
@@ -36,8 +33,9 @@ if uploaded_file:
 
     fr_holidays = holidays.France(years=annee_detectee)
 
-    # Initialisations
     results, codes_non_reconnus, nuit_counter = [], {}, {}
+    df_agents = pd.DataFrame()
+    df_equite = pd.DataFrame()
 
     for idx, row in df.iterrows():
         nom = row.iloc[0]
@@ -48,7 +46,7 @@ if uploaded_file:
                     jour = int(col)
                 except:
                     continue
-                date = datetime(anneee_detectee, mois_detecte, jour)
+                date = datetime(annee_detectee, mois_detecte, jour)
                 is_dimanche = date.weekday() == 6
                 is_ferie = date in fr_holidays
 
@@ -62,7 +60,6 @@ if uploaded_file:
                 else:
                     codes_non_reconnus[code] = codes_non_reconnus.get(code, 0) + 1
 
-    # Résultats détaillés
     df_result = pd.DataFrame(results)
 
     # Synthèse
@@ -73,11 +70,9 @@ if uploaded_file:
             "Jour": "count"
         }).reset_index()
         df_summary.rename(columns={"Jour": "Nombre de jours"}, inplace=True)
-
         total_jours = df_summary["Nombre de jours"].sum()
         total_heures = df_summary["Durée (heures)"].sum()
         df_summary.loc[len(df_summary)] = ["TOTAL", "", total_heures, total_jours]
-
         st.subheader("Synthèse par agent")
         st.dataframe(df_summary)
     else:
@@ -117,8 +112,30 @@ if uploaded_file:
     st.dataframe(df_totaux)
 
     # Graphiques
-    if (total_heures_jf + total_heures_nuits) > 0:
-        # Camembert global
+    heures_par_agent = {}
+    if not df_summary.empty:
+        for idx, row in df_summary.iterrows():
+            if row['Nom'] != "TOTAL":
+                heures_par_agent[row['Nom']] = heures_par_agent.get(row['Nom'], 0) + row['Durée (heures)']
+    if not df_nuits.empty:
+        for idx, row in df_nuits.iterrows():
+            if row['Nom'] != "TOTAL":
+                heures_par_agent[row['Nom']] = heures_par_agent.get(row['Nom'], 0) + row['Total heures nuits']
+
+    if heures_par_agent:
+        df_agents = pd.DataFrame([(n, h) for n, h in heures_par_agent.items()],
+                                 columns=["Nom", "Total heures"]).sort_values(by="Total heures", ascending=False)
+
+        # Barres
+        fig2, ax2 = plt.subplots()
+        ax2.barh(df_agents["Nom"], df_agents["Total heures"], color="#FF9800")
+        ax2.set_xlabel("Total heures")
+        ax2.set_title("Répartition des heures par agent")
+        st.subheader("Heures par agent")
+        st.pyplot(fig2)
+        fig2.savefig("graphique_bars.png", bbox_inches="tight")
+
+        # Camembert
         labels = ['Dimanches + Jours fériés', 'Nuits']
         valeurs = [total_heures_jf, total_heures_nuits]
         fig, ax = plt.subplots()
@@ -127,28 +144,6 @@ if uploaded_file:
         st.subheader("Répartition des heures")
         st.pyplot(fig)
         fig.savefig("graphique.png", bbox_inches="tight")
-
-        # Barres par agent
-        heures_par_agent = {}
-        if not df_summary.empty:
-            for idx, row in df_summary.iterrows():
-                if row['Nom'] != "TOTAL":
-                    heures_par_agent[row['Nom']] = heures_par_agent.get(row['Nom'], 0) + row['Durée (heures)']
-        if not df_nuits.empty:
-            for idx, row in df_nuits.iterrows():
-                if row['Nom'] != "TOTAL":
-                    heures_par_agent[row['Nom']] = heures_par_agent.get(row['Nom'], 0) + row['Total heures nuits']
-        df_agents = pd.DataFrame([(n, h) for n, h in heures_par_agent.items()],
-                                 columns=["Nom", "Total heures"]).sort_values(by="Total heures", ascending=False)
-
-        if not df_agents.empty:
-            fig2, ax2 = plt.subplots()
-            ax2.barh(df_agents["Nom"], df_agents["Total heures"], color="#FF9800")
-            ax2.set_xlabel("Total heures")
-            ax2.set_title("Répartition des heures par agent")
-            st.subheader("Heures par agent")
-            st.pyplot(fig2)
-            fig2.savefig("graphique_bars.png", bbox_inches="tight")
 
     # Équité
     if not df_agents.empty:
@@ -168,10 +163,8 @@ if uploaded_file:
                 elif val < -20:
                     return 'color: blue; font-weight: bold'
             return ''
-        styled_equite = df_equite.style.applymap(highlight_equite, subset=["Écart (%)"])
-        st.dataframe(styled_equite, use_container_width=True)
+        st.dataframe(df_equite.style.applymap(highlight_equite, subset=["Écart (%)"]))
 
-        # Graphique équité
         fig3, ax3 = plt.subplots(figsize=(8, 5))
         ax3.bar(df_equite["Nom"], df_equite["Total heures"], color="#673AB7", label="Agent")
         ax3.axhline(y=moyenne_par_agent, color='r', linestyle='--', label=f"Moyenne ({moyenne_par_agent:.1f} h)")
@@ -208,10 +201,10 @@ if uploaded_file:
             rows, cols = df_equite.shape
             format_red = workbook.add_format({'font_color': 'red', 'bold': True})
             format_blue = workbook.add_format({'font_color': 'blue', 'bold': True})
-            worksheet.conditional_format(1, cols-1, rows, cols-1, {
-                'type': 'cell', 'criteria': '>', 'value': 20, 'format': format_red})
-            worksheet.conditional_format(1, cols-1, rows, cols-1, {
-                'type': 'cell', 'criteria': '<', 'value': -20, 'format': format_blue})
+            worksheet.conditional_format(1, cols-1, rows, cols-1,
+                                         {'type': 'cell', 'criteria': '>', 'value': 20, 'format': format_red})
+            worksheet.conditional_format(1, cols-1, rows, cols-1,
+                                         {'type': 'cell', 'criteria': '<', 'value': -20, 'format': format_blue})
 
     st.download_button("📥 Télécharger le fichier Excel",
                        data=output.getvalue(),
@@ -246,7 +239,6 @@ if uploaded_file:
     add_table(df_equite, "Suivi de l'équité")
     add_table(df_codes, "Codes non reconnus")
 
-    # Graphiques
     try:
         pdf.add_page()
         pdf.set_font("Arial", 'B', 14)
