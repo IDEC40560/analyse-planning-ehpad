@@ -5,7 +5,7 @@ from io import BytesIO
 st.set_page_config(page_title="Analyse Planning EHPAD", layout="centered")
 st.title("📊 Analyse des Dimanches, Jours fériés et Nuits")
 
-# Définition des codes horaires et leurs durées
+# Codes horaires et durées
 horaire_durations = {
     "JWE": 10.25,
     "MA": 7.5, "M1": 7.5, "M2": 7.5, "M3": 7.5, "M4": 7.5, "S": 7.5,
@@ -15,40 +15,54 @@ horaire_durations = {
     "815": 10
 }
 
-# Jours fériés en mai 2025 (modifiable chaque mois)
-jours_feries = [1, 8, 29]
+# Jours fériés en juillet 2025 (ajuste selon le mois)
+jours_feries = [14]
 
 uploaded_file = st.file_uploader("📂 Importer le planning mensuel (Excel)", type=["xlsx"])
 
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0)
-        jours = df.iloc[2]
-        jours_semaine = df.iloc[1]
+
+        # Détection des jours (ligne 0) et suppression des colonnes doublées (.1, .2 etc.)
+        jours = df.iloc[0]
+        jours_clean = []
+        used_cols = []
+        for col in range(1, len(df.columns)):
+            if ".1" in str(df.columns[col]):
+                continue  # ignorer les doublons
+            jours_clean.append((col, jours[col]))
+            used_cols.append(col)
+
         resultats = []
         nuit_counter = {}
 
-        for col in range(3, len(df.columns)):
+        for col, jour in jours_clean:
             try:
-                jour = int(jours[col])
-                jour_type = "férié" if jour in jours_feries else ("dimanche" if str(jours_semaine[col]).strip().upper() == "D" else None)
-                for row in range(3, len(df)):
-                    nom = df.iloc[row, 0]
-                    if pd.isna(nom): continue
-                    code = str(df.iloc[row, col]).strip().upper()
-                    if not code or code == 'NAN': continue
+                jour = int(jour)
+                jour_semaine = str(df.columns[col]).strip().upper()[0]  # L, M, M, J, V, S, D
+                jour_type = "férié" if jour in jours_feries else ("dimanche" if jour_semaine == "D" else None)
 
-                    # Comptage des nuits
+                for row in range(1, len(df)):  # ligne 1 et suivantes : planning
+                    nom = df.iloc[row, 0]
+                    if pd.isna(nom):
+                        continue
+                    code = str(df.iloc[row, col]).strip().upper()
+                    if not code or code == "NAN" or code == "-":
+                        continue
+
+                    # Comptage nuits
                     if code == "N":
                         nuit_counter[nom] = nuit_counter.get(nom, 0) + 1
 
-                    # Ajout au tableau dimanches/jours fériés
+                    # Comptage dimanches et fériés
                     if jour_type:
                         duree = horaire_durations.get(code, code)
-                        resultats.append([nom, f"2025-05-{jour:02d}", jour_type, code, duree])
+                        resultats.append([nom, f"2025-07-{jour:02d}", jour_type, code, duree])
             except:
                 continue
 
+        # Tableau résultats dimanches et fériés
         if resultats:
             df_result = pd.DataFrame(resultats, columns=["Nom", "Date", "Jour", "Code horaire", "Durée (heures)"])
             st.success("✅ Analyse des dimanches et jours fériés terminée")
@@ -57,6 +71,7 @@ if uploaded_file:
             df_result = pd.DataFrame()
             st.warning("⚠️ Aucun travail trouvé les dimanches ou jours fériés.")
 
+        # Tableau résultats nuits
         if nuit_counter:
             df_nuits = pd.DataFrame(list(nuit_counter.items()), columns=["Nom", "Nombre de nuits"])
             st.success("🌙 Comptage des nuits effectué")
@@ -67,7 +82,7 @@ if uploaded_file:
 
         # Export Excel
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
             if not df_result.empty:
                 df_result.to_excel(writer, index=False, sheet_name="Dimanches_JF")
             if not df_nuits.empty:
