@@ -1,196 +1,199 @@
 import streamlit as st
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
-from datetime import datetime
-from io import BytesIO
+import seaborn as sns
 from fpdf import FPDF
-import holidays
-from fpdf.enums import XPos, YPos
+import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
-st.set_page_config(page_title="Analyse Planning EHPAD", layout="wide")
-st.title("📅 Analyse des plannings EHPAD")
+# ------------------------------
+# CONFIGURATION GLOBALE
+# ------------------------------
+st.set_page_config(page_title="Analyse Planning EHPAD Cante Cigale", layout="wide")
 
-# Durées des codes horaires connus
-horaire_durations = {
+EXPORT_DIR = "Exports"
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+# Codes horaires et durées
+CODES_HORAIRES = {
     "JWE": 10.25,
-    "MA": 7.5, "M1": 7.5, "M2": 7.5, "M3": 7.5, "M4": 7.5,
-    "S": 7.5, "SA": 7.5,
+    "MA": 7.5, "M1": 7.5, "M2": 7.5, "M3": 7.5, "M4": 7.5, "S": 7.5, "SA": 7.5,
     "SE": 7.25,
     "N": 10,
-    "815": 10, "815ASA" : 10,
-	"CJ" : 9.25,
+    "815": 10
 }
 
-uploaded_file = st.file_uploader("📂 Téléversez le fichier Excel du planning :", type="xlsx")
-
-if uploaded_file:
-    # On saute la première ligne (jours : L, M, M, J, etc.)
-    df = pd.read_excel(uploaded_file, header=1)
-
-    try:
-        mois_detecte = int(st.text_input("Mois (1-12) :", datetime.now().month))
-        annee_detectee = int(st.text_input("Année (YYYY) :", datetime.now().year))
-    except:
-        st.error("⚠️ Veuillez entrer un mois et une année valides.")
-        st.stop()
-
-    fr_holidays = holidays.France(years=annee_detectee)
-
-    results, codes_non_reconnus, nuit_counter = [], {}, {}
-
-    # Analyse du fichier
-    for idx, row in df.iterrows():
+# ------------------------------
+# FONCTIONS UTILES
+# ------------------------------
+def calculer_heures(df):
+    resultats = []
+    for _, row in df.iterrows():
         nom = row.iloc[0]
-        for col in df.columns[1:]:
-            code = str(row[col]).strip()
-            if code and code.lower() != "nan":
-                try:
-                    jour = int(col)
-                except:
-                    continue
-                date = datetime(annee_detectee, mois_detecte, jour)
-                is_dimanche = date.weekday() == 6
-                is_ferie = date in fr_holidays
+        for jour, code in row.iloc[1:].items():
+            if isinstance(code, str) and code.strip():
+                heures = CODES_HORAIRES.get(code.strip(), 0)
+                resultats.append({"Nom": nom, "Jour": jour, "Code": code, "Heures": heures})
+    return pd.DataFrame(resultats)
 
-                if code in horaire_durations:
-                    heures = horaire_durations[code]
-                else:
-                    heures = 0
-                    codes_non_reconnus[code] = codes_non_reconnus.get(code, 0) + 1
-
-                if (is_dimanche or is_ferie) and heures > 0:
-                    results.append({"Nom": nom, "Date": date.strftime("%d/%m/%Y"),
-                                    "Jour": jour, "Durée (heures)": heures})
-                if code == "N":
-                    nuit_counter[nom] = nuit_counter.get(nom, 0) + 1
-
-    df_result = pd.DataFrame(results)
-
-    # Synthèse par agent
-    if not df_result.empty:
-        df_summary = df_result.groupby("Nom").agg({
-            "Date": lambda x: ", ".join(x),
-            "Durée (heures)": "sum",
-            "Jour": "count"
-        }).reset_index()
-        df_summary.rename(columns={"Jour": "Nombre de jours"}, inplace=True)
-        total_jours = df_summary["Nombre de jours"].sum()
-        total_heures = df_summary["Durée (heures)"].sum()
-        df_summary.loc[len(df_summary)] = ["TOTAL", "", total_heures, total_jours]
-        st.subheader("Synthèse par agent")
-        st.dataframe(df_summary)
+def appliquer_code_couleur(val, moyenne):
+    if val < moyenne:
+        return (220, 220, 220)  # Gris clair
+    elif abs(val - moyenne) / moyenne <= 0.1:
+        return (200, 255, 200)  # Vert clair
+    elif (val - moyenne) / moyenne <= 0.25:
+        return (255, 230, 200)  # Orange clair
     else:
-        df_summary = pd.DataFrame()
-        st.warning("❌ Aucun dimanche ni jour férié détecté avec des codes reconnus.")
+        return (255, 180, 180)  # Rouge clair
 
-    # Suivi de l'équité
-    if not df_summary.empty and "TOTAL" in df_summary["Nom"].values:
-        df_equite = df_summary[df_summary["Nom"] != "TOTAL"].copy()
-        moyenne_jours = df_equite["Nombre de jours"].mean()
-        moyenne_heures = df_equite["Durée (heures)"].mean()
-        df_equite["Écart jours"] = df_equite["Nombre de jours"] - moyenne_jours
-        df_equite["Écart heures"] = df_equite["Durée (heures)"] - moyenne_heures
+def generer_pdf(titre, tableau, fichier_pdf):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(200, 10, "Analyse Planning – EHPAD Cante Cigale", ln=True, align="C")
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(200, 10, titre, ln=True, align="C")
+    pdf.ln(10)
 
-        st.subheader("⚖️ Suivi de l'équité")
-        st.dataframe(df_equite)
+    moyenne_globale = tableau["Moyenne mensuelle"].mean()
 
-        st.markdown(f"**Moyenne des jours :** {moyenne_jours:.2f} jours")
-        st.markdown(f"**Moyenne des heures :** {moyenne_heures:.2f} h")
+    pdf.set_font("Arial", size=9)
+    col_width = pdf.w / (len(tableau.columns) + 1)
 
-    # Travail de nuit
-    if nuit_counter:
-        data_nuits, total_nuits, total_heures_nuits = [], 0, 0
-        for nom, nb_nuits in nuit_counter.items():
-            heures_nuit = nb_nuits * horaire_durations["N"]
-            data_nuits.append([nom, nb_nuits, heures_nuit])
-            total_nuits += nb_nuits
-            total_heures_nuits += heures_nuit
-        data_nuits.append(["TOTAL", total_nuits, total_heures_nuits])
-        df_nuits = pd.DataFrame(data_nuits, columns=["Nom", "Nombre de nuits", "Total heures nuits"])
-        st.subheader("🌙 Travail de nuit")
-        st.dataframe(df_nuits)
-    else:
-        df_nuits = pd.DataFrame()
-        st.warning("❌ Aucun travail de nuit détecté.")
+    # En-tête
+    for col in tableau.columns:
+        pdf.set_fill_color(180, 180, 180)
+        pdf.cell(col_width, 8, str(col), border=1, align="C", fill=True)
+    pdf.ln()
 
-    # Codes non reconnus
-    if codes_non_reconnus:
-        df_codes = pd.DataFrame(list(codes_non_reconnus.items()), columns=["Code non reconnu", "Occurrences"])
-        st.subheader("⚠️ Codes horaires non reconnus")
-        st.dataframe(df_codes)
-    else:
-        df_codes = pd.DataFrame()
-        st.info("✅ Tous les codes horaires ont été reconnus ou aucun agent détecté.")
+    # Lignes avec couleur
+    for _, row in tableau.iterrows():
+        for col in tableau.columns:
+            val = row[col]
+            if isinstance(val, (int, float)):
+                bg = appliquer_code_couleur(val, moyenne_globale)
+                pdf.set_fill_color(*bg)
+                txt = f"{val:.1f}"
+            else:
+                pdf.set_fill_color(255, 255, 255)
+                txt = str(val)
+            pdf.cell(col_width, 8, txt, border=1, align="C", fill=True)
+        pdf.ln()
 
-    # Graphique des heures par agent
-    if not df_summary.empty and "TOTAL" in df_summary["Nom"].values:
-        df_graph = df_summary[df_summary["Nom"] != "TOTAL"]
-        df_graph = df_graph.sort_values(by="Durée (heures)", ascending=False)
-        fig, ax = plt.subplots()
-        ax.bar(df_graph["Nom"], df_graph["Durée (heures)"], color="skyblue")
-        plt.xticks(rotation=45, ha="right")
-        plt.ylabel("Heures travaillées")
-        plt.title("Répartition des heures (dimanches & fériés)")
+    pdf.ln(5)
+    pdf.set_font("Arial", 'I', 9)
+    pdf.multi_cell(0, 6,
+        "Légende des couleurs :\n"
+        "🟩 Vert : dans la moyenne ±10%\n"
+        "🟧 Orange : +10% à +25% au-dessus de la moyenne\n"
+        "🟥 Rouge : >25% au-dessus de la moyenne\n"
+        "⬜ Gris : en dessous de la moyenne"
+    )
+
+    pdf.output(fichier_pdf)
+
+def appliquer_couleurs_excel(fichier_excel, moyenne):
+    wb = load_workbook(fichier_excel)
+    ws = wb.active
+    for row in ws.iter_rows(min_row=2, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                r, g, b = appliquer_code_couleur(cell.value, moyenne)
+                couleur_hex = f"{r:02X}{g:02X}{b:02X}"
+                cell.fill = PatternFill(start_color=couleur_hex, end_color=couleur_hex, fill_type="solid")
+    wb.save(fichier_excel)
+
+# ------------------------------
+# INTERFACE STREAMLIT
+# ------------------------------
+st.sidebar.title("Menu")
+choix = st.sidebar.radio("Choisir une analyse :", ["Analyse mensuelle", "Tableau de bord multi-mois"])
+
+# ------------------------------
+# ANALYSE MENSUELLE
+# ------------------------------
+if choix == "Analyse mensuelle":
+    st.title("Analyse mensuelle du planning")
+
+    fichier = st.file_uploader("Téléverser le fichier Excel du planning", type=["xlsx"])
+    if fichier:
+        df = pd.read_excel(fichier)
+        resultats = calculer_heures(df)
+
+        if not resultats.empty:
+            total_par_nom = resultats.groupby("Nom")["Heures"].sum().reset_index()
+            st.subheader("Totaux par agent")
+            st.dataframe(total_par_nom)
+
+            # Graphique
+            fig, ax = plt.subplots()
+            sns.barplot(x="Heures", y="Nom", data=total_par_nom.sort_values("Heures", ascending=False), ax=ax)
+            ax.set_title("Répartition des heures - Analyse mensuelle")
+            st.pyplot(fig)
+
+            # Export Excel
+            nom_excel = os.path.join(EXPORT_DIR, f"Analyse_Mensuelle_{datetime.date.today()}.xlsx")
+            with pd.ExcelWriter(nom_excel, engine="openpyxl") as writer:
+                total_par_nom.to_excel(writer, index=False, sheet_name="Synthese")
+            st.success(f"Fichier Excel généré : {nom_excel}")
+
+            # Export PDF
+            nom_pdf = os.path.join(EXPORT_DIR, f"Analyse_Mensuelle_{datetime.date.today()}.pdf")
+            generer_pdf("Synthèse Analyse Mensuelle", total_par_nom, nom_pdf)
+            st.success(f"Fichier PDF généré : {nom_pdf}")
+
+# ------------------------------
+# TABLEAU DE BORD MULTI-MOIS
+# ------------------------------
+if choix == "Tableau de bord multi-mois":
+    st.title("Tableau de bord multi-mois")
+
+    fichiers = st.file_uploader("Téléverser plusieurs fichiers Excel (jusqu'à 12)", type=["xlsx"], accept_multiple_files=True)
+
+    if fichiers:
+        synthese_globale = pd.DataFrame()
+
+        for fichier in fichiers:
+            mois_annee = os.path.splitext(fichier.name)[0]
+            df = pd.read_excel(fichier)
+            resultats = calculer_heures(df)
+            total = resultats.groupby("Nom")["Heures"].sum().reset_index()
+            total.rename(columns={"Heures": mois_annee}, inplace=True)
+
+            if synthese_globale.empty:
+                synthese_globale = total
+            else:
+                synthese_globale = pd.merge(synthese_globale, total, on="Nom", how="outer")
+
+        synthese_globale.fillna(0, inplace=True)
+
+        synthese_globale["Total annuel"] = synthese_globale.iloc[:, 1:].sum(axis=1)
+        synthese_globale["Moyenne mensuelle"] = synthese_globale.iloc[:, 1:-1].mean(axis=1)
+
+        st.subheader("Synthèse multi-mois")
+        st.dataframe(synthese_globale)
+
+        # Graphique évolution
+        st.subheader("Évolution par agent")
+        fig, ax = plt.subplots(figsize=(10,6))
+        for _, row in synthese_globale.iterrows():
+            ax.plot(synthese_globale.columns[1:-2], row[1:-2], marker="o", label=row["Nom"])
+        ax.set_xlabel("Mois")
+        ax.set_ylabel("Heures")
+        ax.set_title("Évolution des heures dimanches/fériés")
+        ax.legend()
         st.pyplot(fig)
 
-    # Export Excel
-    if not df_summary.empty:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df_summary.to_excel(writer, sheet_name="Synthese", index=False)
-            if not df_equite.empty:
-                df_equite.to_excel(writer, sheet_name="Equite", index=False)
-            if not df_nuits.empty:
-                df_nuits.to_excel(writer, sheet_name="Nuits", index=False)
-            if not df_codes.empty:
-                df_codes.to_excel(writer, sheet_name="Codes_non_reconnus", index=False)
-        st.download_button("⬇️ Télécharger Excel", data=output.getvalue(),
-                           file_name=f"Analyse_Planning_{mois_detecte}_{annee_detectee}.xlsx")
+        # Export Excel avec couleurs
+        nom_excel = os.path.join(EXPORT_DIR, f"Comparatif_Annuel_{datetime.date.today()}.xlsx")
+        with pd.ExcelWriter(nom_excel, engine="openpyxl") as writer:
+            synthese_globale.to_excel(writer, index=False, sheet_name="Comparatif Annuel")
+        appliquer_couleurs_excel(nom_excel, synthese_globale["Moyenne mensuelle"].mean())
+        st.success(f"Fichier Excel généré : {nom_excel}")
 
-    # Export PDF
-    if not df_summary.empty:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Helvetica", 'B', 16)
-        pdf.cell(200, 10, f"Analyse Planning {mois_detecte:02d}/{annee_detectee}",
-                 align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        pdf.set_font("Helvetica", 'B', 14)
-        pdf.cell(200, 10, "Synthèse par agent", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Helvetica", size=10)
-        for i, row in df_summary.iterrows():
-            pdf.cell(200, 10,
-                     f"{row['Nom']}: {row['Nombre de jours']} jours - {row['Durée (heures)']} h",
-                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        if not df_equite.empty:
-            pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(200, 10, "Suivi de l'équité", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_font("Helvetica", size=10)
-            for i, row in df_equite.iterrows():
-                pdf.cell(200, 10,
-                         f"{row['Nom']}: {row['Écart jours']:+.1f} jours / {row['Écart heures']:+.1f} h",
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        if not df_nuits.empty:
-            pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(200, 10, "Travail de nuit", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_font("Helvetica", size=10)
-            for i, row in df_nuits.iterrows():
-                pdf.cell(200, 10,
-                         f"{row['Nom']}: {row['Nombre de nuits']} nuits - {row['Total heures nuits']} h",
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        if not df_codes.empty:
-            pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(200, 10, "Codes non reconnus", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.set_font("Helvetica", size=10)
-            for i, row in df_codes.iterrows():
-                pdf.cell(200, 10,
-                         f"{row['Code non reconnu']}: {row['Occurrences']} fois",
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-        pdf_output = BytesIO()
-        pdf.output(pdf_output)
-        st.download_button("⬇️ Télécharger PDF", data=pdf_output.getvalue(),
-                           file_name=f"Analyse_Planning_{mois_detecte}_{annee_detectee}.pdf")
+        # Export PDF avec couleurs
+        nom_pdf = os.path.join(EXPORT_DIR, f"Comparatif_Annuel_{datetime.date.today()}.pdf")
+        generer_pdf("Synthèse Comparatif Multi-mois", synthese_globale, nom_pdf)
+        st.success(f"Fichier PDF généré : {nom_pdf}")
